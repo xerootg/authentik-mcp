@@ -9,7 +9,8 @@ This MCP server provides comprehensive access to Authentik's API including:
 - Flow management
 - Event monitoring
 - System administration
-- Provider management
+- Provider management (typed create/update/delete for all provider types)
+- Outpost management (instances, the providers they serve, and service connections)
 - Policy management
 - Property mapping management
 - Source management
@@ -38,6 +39,21 @@ from pydantic import AnyUrl, BaseModel, Field
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("authentik-mcp")
+
+# Provider types map 1:1 to authentik's type-specific API endpoints under /providers/<type>/.
+# Providers must be created/updated through these typed endpoints; /providers/all/ is read-only.
+PROVIDER_TYPES = [
+    "oauth2",
+    "proxy",
+    "ldap",
+    "saml",
+    "radius",
+    "scim",
+    "rac",
+    "ssf",
+    "google_workspace",
+    "microsoft_entra",
+]
 
 # Initialize MCP server
 server: Server[None] = Server("authentik-mcp")
@@ -138,6 +154,12 @@ async def list_resources() -> list[Resource]:
             mimeType="application/json",
             description="List and manage Authentik providers",
         ),
+        Resource(
+            uri=AnyUrl("authentik://outposts"),
+            name="Outposts",
+            mimeType="application/json",
+            description="List and manage Authentik outposts and the providers they serve",
+        ),
     ]
 
 
@@ -166,6 +188,9 @@ async def read_resource(uri: str) -> str:
     if uri == "authentik://providers":
         data = await authentik_client.request("GET", "/providers/all/")
         return f"Providers:\n{data}"
+    if uri == "authentik://outposts":
+        data = await authentik_client.request("GET", "/outposts/instances/")
+        return f"Outposts:\n{data}"
     msg = f"Unknown resource: {uri}"
     raise ValueError(msg)
 
@@ -464,13 +489,228 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="authentik_get_provider",
-            description="Get details of a specific provider",
+            description=(
+                "Get details of a specific provider. Omit provider_type to read the polymorphic "
+                "summary from /providers/all/; pass provider_type to read the full type-specific "
+                "object (recommended before updating, so you can see every editable field)."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "provider_id": {"type": "integer", "description": "Provider ID to retrieve"},
+                    "provider_type": {
+                        "type": "string",
+                        "enum": PROVIDER_TYPES,
+                        "description": "Provider type; when set, reads the typed endpoint for full fields",
+                    },
                 },
                 "required": ["provider_id"],
+            },
+        ),
+        Tool(
+            name="authentik_create_provider",
+            description=(
+                "Create a provider of a given type. Authentik creates providers at type-specific "
+                "endpoints, so pass the kind via 'provider_type' and all provider fields via 'data'. "
+                "Most types require at least: name, authorization_flow, invalidation_flow. Common "
+                "type-specific required fields - oauth2: client_type; proxy: external_host + mode "
+                "(proxy|forward_single|forward_domain); ldap: base_dn; saml: acs_url; radius: "
+                "shared_secret + client_networks; scim: url + token. Use authentik_get_provider "
+                "(with provider_type) on an existing provider to learn the exact field shape."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "provider_type": {
+                        "type": "string",
+                        "enum": PROVIDER_TYPES,
+                        "description": "Provider type (selects the API endpoint)",
+                    },
+                    "data": {
+                        "type": "object",
+                        "description": (
+                            "Provider fields (name, authorization_flow, invalidation_flow, "
+                            "and type-specific fields)"
+                        ),
+                        "additionalProperties": True,
+                    },
+                },
+                "required": ["provider_type", "data"],
+            },
+        ),
+        Tool(
+            name="authentik_update_provider",
+            description=(
+                "Update an existing provider. Provide its 'provider_type', numeric 'provider_id', and "
+                "a 'data' object with the fields to change (PATCH semantics: only included fields change)."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "provider_type": {
+                        "type": "string",
+                        "enum": PROVIDER_TYPES,
+                        "description": "Provider type (selects the API endpoint)",
+                    },
+                    "provider_id": {"type": "integer", "description": "Numeric provider ID (pk)"},
+                    "data": {
+                        "type": "object",
+                        "description": "Fields to update",
+                        "additionalProperties": True,
+                    },
+                },
+                "required": ["provider_type", "provider_id", "data"],
+            },
+        ),
+        Tool(
+            name="authentik_delete_provider",
+            description="Delete a provider by type and numeric ID",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "provider_type": {
+                        "type": "string",
+                        "enum": PROVIDER_TYPES,
+                        "description": "Provider type (selects the API endpoint)",
+                    },
+                    "provider_id": {"type": "integer", "description": "Numeric provider ID (pk)"},
+                },
+                "required": ["provider_type", "provider_id"],
+            },
+        ),
+
+        # Outpost Management Tools
+        Tool(
+            name="authentik_list_outposts",
+            description="List outposts (proxy/ldap/radius/rac deployments that serve providers)",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "search": {"type": "string", "description": "Search term for filtering outposts"},
+                    "ordering": {"type": "string", "description": "Field to order by"},
+                    "page": {"type": "integer", "description": "Page number", "default": 1},
+                    "page_size": {"type": "integer", "description": "Number of items per page", "default": 20},
+                },
+            },
+        ),
+        Tool(
+            name="authentik_get_outpost",
+            description="Get details of a specific outpost",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "outpost_id": {"type": "string", "description": "Outpost UUID to retrieve"},
+                },
+                "required": ["outpost_id"],
+            },
+        ),
+        Tool(
+            name="authentik_create_outpost",
+            description=(
+                "Create an outpost. The 'providers' array holds the IDs of the providers this outpost "
+                "serves, and 'type' must match those providers (a proxy outpost serves proxy providers, "
+                "an ldap outpost serves ldap providers, etc.). Omit service_connection for a manually "
+                "deployed outpost, or set it to a Docker/Kubernetes service-connection UUID to have "
+                "authentik manage the deployment."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Outpost name"},
+                    "type": {
+                        "type": "string",
+                        "enum": ["proxy", "ldap", "radius", "rac"],
+                        "description": "Outpost type",
+                        "default": "proxy",
+                    },
+                    "providers": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "Provider IDs served by this outpost",
+                    },
+                    "service_connection": {
+                        "type": "string",
+                        "description": "Docker/Kubernetes service-connection UUID (omit for manual deployment)",
+                    },
+                    "config": {
+                        "type": "object",
+                        "description": "Outpost configuration overrides",
+                        "additionalProperties": True,
+                    },
+                },
+                "required": ["name", "providers"],
+            },
+        ),
+        Tool(
+            name="authentik_update_outpost",
+            description=(
+                "Update an existing outpost. Set 'providers' to change which providers it serves "
+                "(this replaces the full list, so include every provider the outpost should keep)."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "outpost_id": {"type": "string", "description": "Outpost UUID to update"},
+                    "name": {"type": "string", "description": "Outpost name"},
+                    "type": {
+                        "type": "string",
+                        "enum": ["proxy", "ldap", "radius", "rac"],
+                        "description": "Outpost type",
+                    },
+                    "providers": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "Provider IDs served by this outpost (replaces the existing list)",
+                    },
+                    "service_connection": {
+                        "type": "string",
+                        "description": "Docker/Kubernetes service-connection UUID",
+                    },
+                    "config": {
+                        "type": "object",
+                        "description": "Outpost configuration overrides",
+                        "additionalProperties": True,
+                    },
+                },
+                "required": ["outpost_id"],
+            },
+        ),
+        Tool(
+            name="authentik_delete_outpost",
+            description="Delete an outpost",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "outpost_id": {"type": "string", "description": "Outpost UUID to delete"},
+                },
+                "required": ["outpost_id"],
+            },
+        ),
+        Tool(
+            name="authentik_get_outpost_health",
+            description="Get health/status of an outpost's connected instances",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "outpost_id": {"type": "string", "description": "Outpost UUID"},
+                },
+                "required": ["outpost_id"],
+            },
+        ),
+        Tool(
+            name="authentik_list_outpost_service_connections",
+            description=(
+                "List outpost service connections (Docker/Kubernetes) that outposts can be deployed on. "
+                "Use the returned UUIDs as 'service_connection' when creating or updating an outpost."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "search": {"type": "string", "description": "Search term for filtering service connections"},
+                    "ordering": {"type": "string", "description": "Field to order by"},
+                    "page": {"type": "integer", "description": "Page number", "default": 1},
+                    "page_size": {"type": "integer", "description": "Number of items per page", "default": 20},
+                },
             },
         ),
 
@@ -619,8 +859,74 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> Sequence[TextConten
 
         if name == "authentik_get_provider":
             provider_id = arguments["provider_id"]
-            data = await authentik_client.request("GET", f"/providers/all/{provider_id}/")
+            provider_type = arguments.get("provider_type")
+            endpoint = (
+                f"/providers/{provider_type}/{provider_id}/"
+                if provider_type
+                else f"/providers/all/{provider_id}/"
+            )
+            data = await authentik_client.request("GET", endpoint)
             return [TextContent(type="text", text=f"Provider details: {data}")]
+
+        if name == "authentik_create_provider":
+            provider_type = arguments["provider_type"]
+            data = await authentik_client.request(
+                "POST", f"/providers/{provider_type}/", json_data=arguments["data"],
+            )
+            return [TextContent(type="text", text=f"Created provider: {data}")]
+
+        if name == "authentik_update_provider":
+            provider_type = arguments["provider_type"]
+            provider_id = arguments["provider_id"]
+            data = await authentik_client.request(
+                "PATCH", f"/providers/{provider_type}/{provider_id}/", json_data=arguments["data"],
+            )
+            return [TextContent(type="text", text=f"Updated provider: {data}")]
+
+        if name == "authentik_delete_provider":
+            provider_type = arguments["provider_type"]
+            provider_id = arguments["provider_id"]
+            await authentik_client.request("DELETE", f"/providers/{provider_type}/{provider_id}/")
+            return [TextContent(type="text", text=f"Deleted provider {provider_id}")]
+
+        # Outpost Management Tools
+        if name == "authentik_list_outposts":
+            params = {k: v for k, v in arguments.items() if v is not None}
+            data = await authentik_client.request("GET", "/outposts/instances/", params=params)
+            return [TextContent(type="text", text=f"Outposts: {data}")]
+
+        if name == "authentik_get_outpost":
+            outpost_id = arguments["outpost_id"]
+            data = await authentik_client.request("GET", f"/outposts/instances/{outpost_id}/")
+            return [TextContent(type="text", text=f"Outpost details: {data}")]
+
+        if name == "authentik_create_outpost":
+            data = await authentik_client.request("POST", "/outposts/instances/", json_data=arguments)
+            return [TextContent(type="text", text=f"Created outpost: {data}")]
+
+        if name == "authentik_update_outpost":
+            outpost_id = arguments.pop("outpost_id")
+            data = await authentik_client.request(
+                "PATCH", f"/outposts/instances/{outpost_id}/", json_data=arguments,
+            )
+            return [TextContent(type="text", text=f"Updated outpost: {data}")]
+
+        if name == "authentik_delete_outpost":
+            outpost_id = arguments["outpost_id"]
+            await authentik_client.request("DELETE", f"/outposts/instances/{outpost_id}/")
+            return [TextContent(type="text", text=f"Deleted outpost {outpost_id}")]
+
+        if name == "authentik_get_outpost_health":
+            outpost_id = arguments["outpost_id"]
+            data = await authentik_client.request("GET", f"/outposts/instances/{outpost_id}/health/")
+            return [TextContent(type="text", text=f"Outpost health: {data}")]
+
+        if name == "authentik_list_outpost_service_connections":
+            params = {k: v for k, v in arguments.items() if v is not None}
+            data = await authentik_client.request(
+                "GET", "/outposts/service_connections/all/", params=params,
+            )
+            return [TextContent(type="text", text=f"Service connections: {data}")]
 
         # Token Management Tools
         if name == "authentik_list_tokens":
@@ -673,7 +979,7 @@ async def main() -> None:
                 write_stream,
                 InitializationOptions(
                     server_name="authentik-mcp",
-                    server_version="0.1.2",
+                    server_version="0.2.0",
                     capabilities=server.get_capabilities(
                         notification_options=NotificationOptions(),
                         experimental_capabilities={},

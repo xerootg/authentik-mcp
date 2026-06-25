@@ -19,6 +19,15 @@ A Model Context Protocol (MCP) server that provides comprehensive integration wi
 - Configure application providers
 - Application deployment and configuration
 
+### Provider Management
+- Create, update, and delete providers of any type (oauth2, proxy, ldap, saml, radius, scim, rac, ssf, google_workspace, microsoft_entra)
+- Type-aware editing via authentik's per-type endpoints
+
+### Outpost Management
+- Create, update, and delete outposts
+- Control which providers an outpost serves
+- Inspect outpost health and available service connections
+
 ### Authentication Flows
 - View and manage authentication flows
 - Flow configuration and customization
@@ -92,8 +101,22 @@ You can also configure the server using environment variables:
 - `authentik_get_flow` - Get flow details
 
 ### Provider Management
-- `authentik_list_providers` - List authentication providers
-- `authentik_get_provider` - Get provider details
+- `authentik_list_providers` - List all providers (polymorphic, read-only `/providers/all/`)
+- `authentik_get_provider` - Get provider details; pass `provider_type` for full type-specific fields
+- `authentik_create_provider` - Create a provider of a given type (`provider_type` + `data`)
+- `authentik_update_provider` - Update a provider (`provider_type`, `provider_id`, `data`)
+- `authentik_delete_provider` - Delete a provider (`provider_type`, `provider_id`)
+
+  Supported `provider_type` values: `oauth2`, `proxy`, `ldap`, `saml`, `radius`, `scim`, `rac`, `ssf`, `google_workspace`, `microsoft_entra`. Providers are created/updated through authentik's type-specific endpoints, so the `data` object carries the type's fields (e.g. `name`, `authorization_flow`, `invalidation_flow`, plus type-specific ones). Read an existing provider with `provider_type` set to learn the exact shape.
+
+### Outpost Management
+- `authentik_list_outposts` - List outposts
+- `authentik_get_outpost` - Get outpost details
+- `authentik_create_outpost` - Create an outpost; `providers` is the list of provider IDs it serves
+- `authentik_update_outpost` - Update an outpost (change `providers` to retarget which providers it serves)
+- `authentik_delete_outpost` - Delete an outpost
+- `authentik_get_outpost_health` - Get health/status of an outpost's instances
+- `authentik_list_outpost_service_connections` - List Docker/Kubernetes service connections for deploying outposts
 
 ### Token Management
 - `authentik_list_tokens` - List API tokens
@@ -108,6 +131,7 @@ The server provides access to the following resources:
 - `authentik://events` - Event monitoring and audit logs
 - `authentik://flows` - Authentication flows
 - `authentik://providers` - Authentication providers
+- `authentik://outposts` - Outposts and the providers they serve
 
 ## Example Usage
 
