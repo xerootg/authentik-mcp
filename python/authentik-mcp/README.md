@@ -50,10 +50,16 @@ This server is designed to be used with MCP-compatible tools and platforms. It p
 
 ### Configuration
 
-The server requires the following configuration parameters:
-- `base-url`: Base URL of your Authentik instance (required)
-- `token`: Authentik API token (required)
+The server needs the following to connect. Each may be passed as a `serve` flag,
+set via an environment variable, or stored once via `authentik-mcp login` (see
+[Setup & maintenance](#setup--maintenance-login--rotate--logout--status)):
+- `base-url`: Base URL of your Authentik instance
+- `token`: Authentik API token (`intent=api`)
 - `verify-ssl`: Enable/disable SSL certificate verification (optional, default: true)
+
+Resolution order for `serve` is: CLI flag → environment variable → stored
+credential file. If none provide a base URL and token, the server exits with a
+hint to run `authentik-mcp login`.
 
 ### Environment Variables
 You can also configure the server using environment variables:
@@ -61,13 +67,47 @@ You can also configure the server using environment variables:
 - `AUTHENTIK_TOKEN`: Authentik API token
 - `AUTHENTIK_VERIFY_SSL`: SSL certificate verification (true/false)
 
-## API Token Setup
+## Setup & maintenance (`login` / `rotate` / `logout` / `status`)
 
-1. Log in to your Authentik instance as an administrator
-2. Navigate to **Directory** > **Tokens**
-3. Click **Create** to create a new token
-4. Choose the appropriate permissions for your use case
-5. Copy the generated token for use with this MCP server
+The package ships a small CLI for obtaining and maintaining the API token, so
+you don't have to keep a token inline in your MCP client config. Credentials are
+stored at `$XDG_CONFIG_HOME/authentik-mcp/config.json` (mode `0600`), and the
+default `serve` command reads them from there (CLI flags and
+`AUTHENTIK_BASE_URL`/`AUTHENTIK_TOKEN` still take precedence).
+
+```bash
+# Mint a durable intent=api token and store it (+ register in Claude Code).
+# Default method execs into the Authentik server pod via your (ak-backed)
+# kubeconfig — base URL and username are auto-detected from the ak CLI profile.
+authentik-mcp login
+
+# No cluster access? store a token you created in the UI instead:
+authentik-mcp login --method manual            # prompts, or --token <key>
+
+# Rotate: mint a fresh token and revoke the previous one.
+authentik-mcp rotate
+
+# Inspect what's stored and check it against the API.
+authentik-mcp status
+
+# Revoke + remove the stored credential and the Claude entry.
+authentik-mcp logout --revoke
+```
+
+`login`/`rotate` register an `authentik` server in your Claude Code **user**
+config as `authentik-mcp serve` (no inline token — the credential stays only in
+the `0600` file). Pass `--no-claude` to skip that.
+
+Useful flags for the kube method: `--namespace` (default `authentik`),
+`--pod-selector` (default `authentik-server`), `--username`, `--identifier`
+(default `claude-code-mcp`), `--base-url`.
+
+### Creating the token manually
+
+If you'd rather create the token yourself: log in to Authentik as an admin →
+**Directory → Tokens → Create** → set Intent to **API** → copy the key and feed
+it via `authentik-mcp login --method manual`, the `--token` flag, or
+`AUTHENTIK_TOKEN`.
 
 ## Available Tools
 

@@ -18,8 +18,6 @@ This MCP server provides comprehensive access to Authentik's API including:
 - Token management
 """
 
-import argparse
-import asyncio
 import logging
 from collections.abc import Sequence
 from typing import Any
@@ -945,21 +943,17 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> Sequence[TextConten
         return [TextContent(type="text", text=f"Error: {e!s}")]
 
 
-async def main() -> None:
-    """Main entry point for the MCP server."""
-    parser = argparse.ArgumentParser(description="Authentik MCP Server")
-    parser.add_argument("--base-url", required=True, help="Authentik base URL")
-    parser.add_argument("--token", required=True, help="Authentik API token")
-    parser.add_argument("--no-verify-ssl", action="store_true", help="Disable SSL verification")
+async def serve(base_url: str, token: str, *, verify_ssl: bool = True) -> None:
+    """Run the MCP server against the given Authentik instance.
 
-    args = parser.parse_args()
-
-    # Initialize Authentik client
+    Credentials are resolved by the CLI (see authentik_mcp.cli); this entry
+    point just takes the resolved values.
+    """
     global authentik_client
     config = AuthentikConfig(
-        base_url=args.base_url,
-        token=args.token,
-        verify_ssl=not args.no_verify_ssl,
+        base_url=base_url,
+        token=token,
+        verify_ssl=verify_ssl,
     )
     authentik_client = AuthentikClient(config)
 
@@ -969,6 +963,7 @@ async def main() -> None:
         logger.info("Successfully connected to Authentik API")
     except Exception as e:
         logger.exception(f"Failed to connect to Authentik API: {e}")
+        await authentik_client.close()
         return
 
     # Run MCP server
@@ -979,7 +974,7 @@ async def main() -> None:
                 write_stream,
                 InitializationOptions(
                     server_name="authentik-mcp",
-                    server_version="0.2.0",
+                    server_version="0.3.0",
                     capabilities=server.get_capabilities(
                         notification_options=NotificationOptions(),
                         experimental_capabilities={},
@@ -991,9 +986,12 @@ async def main() -> None:
             await authentik_client.close()
 
 
-# --- Ensure main() is always awaited, even if not run as __main__ ---
 def run() -> None:
-    asyncio.run(main())
+    """Backward-compatible entry point: delegate to the CLI."""
+    from authentik_mcp.cli import main  # noqa: PLC0415 (avoids a circular import)
+
+    raise SystemExit(main())
+
 
 if __name__ == "__main__":
     run()

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "authentik-mcp"
-version = "0.2.0"
+version = "0.3.0"
 description = "MCP server for Authentik API integration with full capabilities"
 authors = [
     {name = "Authentik MCP", email = "hello@goauthentik.io"}
@@ -44,7 +44,7 @@ Repository = "https://github.com/goauthentik/authentik-mcp"
 Documentation = "https://docs.goauthentik.io/"
 
 [project.scripts]
-authentik-mcp = "authentik_mcp.server:run"
+authentik-mcp = "authentik_mcp.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/authentik_mcp"]
@@ -78,6 +78,9 @@ ignore = ["ANN101", "ANN102", "S101", "PLR0913", "PLR0912", "PLR0915", "PLR0911"
 
 [tool.ruff.per-file-ignores]
 "tests/*" = ["S101", "PLR2004", "ANN201", "ANN001"]
+# CLI prints user-facing output; auth shells out to kubectl/ak/claude by name.
+"src/authentik_mcp/cli.py" = ["T201"]
+"src/authentik_mcp/auth.py" = ["S603", "S607"]
 
 [dependency-groups]
 dev = [
