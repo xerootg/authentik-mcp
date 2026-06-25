@@ -1,0 +1,70 @@
+# GitLab CI/CD pipeline for authentik-mcp.
+#
+#   lint     - static checks (ruff) on the management server
+#   build    - build the Python wheel/sdist, exposed as downloadable artifacts
+#   publish  - upload the wheel + sdist to this project's GitLab PyPI Package
+#              Registry, so MCP clients can install and run it over stdio
+#
+# The publish job authenticates with the built-in CI job token, so no extra
+# credentials are required. It runs automatically on tag pipelines (publish a
+# release by pushing a version tag) and is available as a manual job on the
+# default branch.
+#
+# Install on a client and launch over stdio, e.g.:
+#   uv tool install --index "${CI_API_V4_URL}/projects/<id>/packages/pypi/simple" authentik-mcp
+#   authentik-mcp --base-url https://authentik.example.com --token <api-token>
+
+stages:
+  - lint
+  - build
+  - publish
+
+variables:
+  # Package we lint, build and publish (the full management server).
+  PKG_DIR: python/authentik-mcp
+
+lint:
+  stage: lint
+  image: ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+  script:
+    - cd "$PKG_DIR"
+    - uvx ruff check src/
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH
+    - if: $CI_COMMIT_TAG
+
+build:wheel:
+  stage: build
+  image: ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+  script:
+    - cd "$PKG_DIR"
+    - uv build --out-dir dist
+  artifacts:
+    paths:
+      - $PKG_DIR/dist/*.whl
+      - $PKG_DIR/dist/*.tar.gz
+    expire_in: 30 days
+  rules:
+    - if: $CI_COMMIT_BRANCH
+    - if: $CI_COMMIT_TAG
+
+publish:pypi:
+  stage: publish
+  image: ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+  needs:
+    - build:wheel
+  script:
+    - cd "$PKG_DIR"
+    - >-
+      uv publish
+      --publish-url "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/pypi"
+      --username gitlab-ci-token
+      --password "$CI_JOB_TOKEN"
+      dist/*
+  rules:
+    # Publish a release by pushing a version tag (bump the version first).
+    - if: $CI_COMMIT_TAG
+    # Allow an on-demand publish from the default branch.
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
