@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "authentik-mcp"
-version = "0.3.0"
+version = "0.4.0"
 description = "MCP server for Authentik API integration with full capabilities"
 authors = [
     {name = "Authentik MCP", email = "hello@goauthentik.io"}
@@ -22,7 +22,7 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
 ]
 dependencies = [
-    "mcp>=1.0.0",
+    "mcp>=1.0.0,<2",
     "httpx>=0.24.0",
     "pydantic>=2.0.0",
     "typing-extensions>=4.0.0",

@@ -33,6 +33,12 @@ A Model Context Protocol (MCP) server that provides comprehensive integration wi
 - Flow configuration and customization
 - Flow monitoring and diagnostics
 
+### Stages, Policies and Brands
+- Create, inspect, update and delete stages of every type
+- Bind stages into flows, reorder them, and gate them with policies
+- Manage policies and policy bindings
+- Set each brand's default flows (authentication, recovery, user settings, ...)
+
 ### Event Monitoring
 - System event tracking and audit logs
 - Real-time event monitoring
@@ -139,6 +145,34 @@ it via `authentik-mcp login --method manual`, the `--token` flag, or
 ### Flow Management
 - `authentik_list_flows` - List authentication flows
 - `authentik_get_flow` - Get flow details
+- `authentik_update_flow` - Update a flow (PATCH)
+- `authentik_list_flow_bindings` - List the stages bound to a flow (`target` = flow pk), in order
+- `authentik_create_flow_binding` - Bind a stage into a flow
+- `authentik_update_flow_binding` - Change a binding's order or policy evaluation
+- `authentik_delete_flow_binding` - Remove a stage from a flow (the stage is kept)
+
+### Stage Management
+- `authentik_list_stages` - List stages of every type
+- `authentik_get_stage` - Get a stage's full config (type looked up automatically)
+- `authentik_create_stage` - Create a stage; `stage_type` is the API path, e.g. `identification`, `authenticator/validate`, `prompt/stages`
+- `authentik_update_stage` - Update a stage (PATCH)
+- `authentik_delete_stage` - Delete a stage
+- `authentik_list_prompts` - List prompt fields used by prompt stages
+
+### Policy Management
+- `authentik_list_policies` - List policies of every type
+- `authentik_get_policy` - Get a policy's full config (type looked up automatically)
+- `authentik_create_policy` - Create a policy (`policy_type` e.g. `expression`, `password`)
+- `authentik_update_policy` - Update a policy (PATCH)
+- `authentik_list_policy_bindings` - List policy bindings (`target` = the bound object's `policybindingmodel_ptr_id`)
+- `authentik_create_policy_binding` / `authentik_update_policy_binding` / `authentik_delete_policy_binding`
+
+### Brand Management
+- `authentik_list_brands` - List brands and their default flows
+- `authentik_update_brand` - Update a brand (PATCH), e.g. set `flow_recovery`
+
+### System
+- `authentik_get_system_info` - authentik version
 
 ### Provider Management
 - `authentik_list_providers` - List all providers (polymorphic, read-only `/providers/all/`)
@@ -172,6 +206,7 @@ The server provides access to the following resources:
 - `authentik://flows` - Authentication flows
 - `authentik://providers` - Authentication providers
 - `authentik://outposts` - Outposts and the providers they serve
+- `authentik://stages` - Flow stages of every type
 
 ## Example Usage
 

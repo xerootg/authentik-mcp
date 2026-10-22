@@ -53,6 +53,57 @@ PROVIDER_TYPES = [
     "microsoft_entra",
 ]
 
+
+# Stage API paths under /stages/. Most map 1:1 from the Django app label
+# (authentik_stages_<label>); a few live under a nested router.
+STAGE_TYPES = [
+    "authenticator/duo",
+    "authenticator/email",
+    "authenticator/endpoint_gdtc",
+    "authenticator/sms",
+    "authenticator/static",
+    "authenticator/totp",
+    "authenticator/validate",
+    "authenticator/webauthn",
+    "captcha",
+    "consent",
+    "deny",
+    "dummy",
+    "email",
+    "identification",
+    "invitation/stages",
+    "mtls",
+    "password",
+    "prompt/stages",
+    "redirect",
+    "source",
+    "user_delete",
+    "user_login",
+    "user_logout",
+    "user_write",
+]
+_STAGE_PATH_OVERRIDES = {
+    "invitation": "invitation/stages",
+    "prompt": "prompt/stages",
+}
+
+
+def stage_path_from_model(meta_model_name: str) -> str:
+    """Map a stage's meta_model_name (e.g. authentik_stages_password.passwordstage) to its API path."""
+    label = meta_model_name.split(".", 1)[0].removeprefix("authentik_stages_")
+    if label in _STAGE_PATH_OVERRIDES:
+        return _STAGE_PATH_OVERRIDES[label]
+    if label.startswith("authenticator_"):
+        return "authenticator/" + label.removeprefix("authenticator_")
+    return label
+
+
+def policy_path_from_model(meta_model_name: str) -> str:
+    """Map a policy's meta_model_name (e.g. authentik_policies_expression.expressionpolicy) to its API path."""
+    label = meta_model_name.split(".", 1)[0]
+    label = label.removeprefix("authentik_policies_").removeprefix("authentik_")
+    return {"expiry": "password_expiry"}.get(label, label)
+
 # Initialize MCP server
 server: Server[None] = Server("authentik-mcp")
 
@@ -153,6 +204,12 @@ async def list_resources() -> list[Resource]:
             description="List and manage Authentik providers",
         ),
         Resource(
+            uri=AnyUrl("authentik://stages"),
+            name="Stages",
+            mimeType="application/json",
+            description="List Authentik flow stages of every type",
+        ),
+        Resource(
             uri=AnyUrl("authentik://outposts"),
             name="Outposts",
             mimeType="application/json",
@@ -186,6 +243,9 @@ async def read_resource(uri: str) -> str:
     if uri == "authentik://providers":
         data = await authentik_client.request("GET", "/providers/all/")
         return f"Providers:\n{data}"
+    if uri == "authentik://stages":
+        data = await authentik_client.request("GET", "/stages/all/")
+        return f"Stages:\n{data}"
     if uri == "authentik://outposts":
         data = await authentik_client.request("GET", "/outposts/instances/")
         return f"Outposts:\n{data}"
@@ -469,6 +529,309 @@ async def list_tools() -> list[Tool]:
                 },
                 "required": ["flow_slug"],
             },
+        ),
+
+        Tool(
+            name="authentik_update_flow",
+            description=(
+                "Update a flow by slug (PATCH: only included fields change), e.g. title, "
+                "designation, authentication, denied_action, compatibility_mode, policy_engine_mode"
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "flow_slug": {"type": "string", "description": "Flow slug to update"},
+                    "data": {"type": "object", "description": "Fields to update", "additionalProperties": True},
+                },
+                "required": ["flow_slug", "data"],
+            },
+        ),
+        Tool(
+            name="authentik_list_flow_bindings",
+            description=(
+                "List stage bindings (which stages run in a flow, and in what order). Filter by "
+                "'target' (the flow's pk UUID, not its slug) to see one flow's stages sorted by order."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "description": "Flow pk (UUID) to filter by"},
+                    "stage": {"type": "string", "description": "Stage UUID to filter by"},
+                    "ordering": {"type": "string", "description": "Field to order by"},
+                    "page": {"type": "integer", "description": "Page number", "default": 1},
+                    "page_size": {"type": "integer", "description": "Number of items per page", "default": 20},
+                },
+            },
+        ),
+        Tool(
+            name="authentik_create_flow_binding",
+            description=(
+                "Bind a stage into a flow. Required: target (flow pk), stage (stage UUID), order. "
+                "Optional: evaluate_on_plan, re_evaluate_policies, policy_engine_mode, invalid_response_action."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "data": {"type": "object", "description": "Binding fields", "additionalProperties": True},
+                },
+                "required": ["data"],
+            },
+        ),
+        Tool(
+            name="authentik_update_flow_binding",
+            description="Update a flow stage binding (PATCH), e.g. change its order or policy evaluation",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "binding_id": {"type": "string", "description": "Binding UUID (fsb_uuid / pk)"},
+                    "data": {"type": "object", "description": "Fields to update", "additionalProperties": True},
+                },
+                "required": ["binding_id", "data"],
+            },
+        ),
+        Tool(
+            name="authentik_delete_flow_binding",
+            description="Remove a stage from a flow by deleting its binding (the stage itself is kept)",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "binding_id": {"type": "string", "description": "Binding UUID"},
+                },
+                "required": ["binding_id"],
+            },
+        ),
+
+        # Stage Management Tools
+        Tool(
+            name="authentik_list_stages",
+            description=(
+                "List stages of every type. Each result has pk, name, component and meta_model_name; "
+                "use authentik_get_stage to read the full type-specific config."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "search": {"type": "string", "description": "Search term for filtering stages"},
+                    "ordering": {"type": "string", "description": "Field to order by"},
+                    "page": {"type": "integer", "description": "Page number", "default": 1},
+                    "page_size": {"type": "integer", "description": "Number of items per page", "default": 20},
+                },
+            },
+        ),
+        Tool(
+            name="authentik_get_stage",
+            description=(
+                "Get a stage's full type-specific config. stage_type is optional: when omitted it is "
+                "looked up from the stage's meta_model_name."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "stage_id": {"type": "string", "description": "Stage UUID"},
+                    "stage_type": {"type": "string", "enum": STAGE_TYPES, "description": "Stage type (API path)"},
+                },
+                "required": ["stage_id"],
+            },
+        ),
+        Tool(
+            name="authentik_create_stage",
+            description=(
+                "Create a stage of the given type. Pass all fields via 'data' (at least 'name'). "
+                "Read an existing stage of the same type with authentik_get_stage to learn field shapes. "
+                "A new stage does nothing until bound into a flow with authentik_create_flow_binding."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "stage_type": {"type": "string", "enum": STAGE_TYPES, "description": "Stage type (API path)"},
+                    "data": {"type": "object", "description": "Stage fields", "additionalProperties": True},
+                },
+                "required": ["stage_type", "data"],
+            },
+        ),
+        Tool(
+            name="authentik_update_stage",
+            description=(
+                "Update a stage (PATCH: only included fields change). stage_type is optional and is "
+                "looked up when omitted. Identification stages validate user_fields even on PATCH, so "
+                "include user_fields when changing one."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "stage_id": {"type": "string", "description": "Stage UUID"},
+                    "stage_type": {"type": "string", "enum": STAGE_TYPES, "description": "Stage type (API path)"},
+                    "data": {"type": "object", "description": "Fields to update", "additionalProperties": True},
+                },
+                "required": ["stage_id", "data"],
+            },
+        ),
+        Tool(
+            name="authentik_delete_stage",
+            description="Delete a stage (also removes it from every flow it is bound to)",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "stage_id": {"type": "string", "description": "Stage UUID"},
+                },
+                "required": ["stage_id"],
+            },
+        ),
+        Tool(
+            name="authentik_list_prompts",
+            description="List prompt fields (used by prompt stages, e.g. in enrollment flows)",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "search": {"type": "string", "description": "Search term"},
+                    "ordering": {"type": "string", "description": "Field to order by"},
+                    "page": {"type": "integer", "description": "Page number", "default": 1},
+                    "page_size": {"type": "integer", "description": "Number of items per page", "default": 20},
+                },
+            },
+        ),
+
+        # Policy Management Tools
+        Tool(
+            name="authentik_list_policies",
+            description="List policies of every type (pk, name, component, meta_model_name, bound_to)",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "search": {"type": "string", "description": "Search term for filtering policies"},
+                    "ordering": {"type": "string", "description": "Field to order by"},
+                    "page": {"type": "integer", "description": "Page number", "default": 1},
+                    "page_size": {"type": "integer", "description": "Number of items per page", "default": 20},
+                },
+            },
+        ),
+        Tool(
+            name="authentik_get_policy",
+            description="Get a policy's full type-specific config (type looked up automatically)",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "policy_id": {"type": "string", "description": "Policy UUID"},
+                },
+                "required": ["policy_id"],
+            },
+        ),
+        Tool(
+            name="authentik_create_policy",
+            description=(
+                "Create a policy. policy_type is the API path under /policies/, e.g. expression, "
+                "password, password_expiry, reputation, event_matcher, dummy, geoip, unique_password"
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "policy_type": {"type": "string", "description": "Policy type (API path)"},
+                    "data": {"type": "object", "description": "Policy fields", "additionalProperties": True},
+                },
+                "required": ["policy_type", "data"],
+            },
+        ),
+        Tool(
+            name="authentik_update_policy",
+            description="Update a policy (PATCH; type looked up automatically)",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "policy_id": {"type": "string", "description": "Policy UUID"},
+                    "data": {"type": "object", "description": "Fields to update", "additionalProperties": True},
+                },
+                "required": ["policy_id", "data"],
+            },
+        ),
+        Tool(
+            name="authentik_list_policy_bindings",
+            description=(
+                "List policy bindings. Filter by 'target' = the policybindingmodel_ptr_id of the object "
+                "the policy is bound to (flows and flow stage bindings both carry this field; it differs "
+                "from their pk), or an application's pk."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "description": "Target binding-model UUID"},
+                    "policy": {"type": "string", "description": "Policy UUID"},
+                    "ordering": {"type": "string", "description": "Field to order by"},
+                    "page": {"type": "integer", "description": "Page number", "default": 1},
+                    "page_size": {"type": "integer", "description": "Number of items per page", "default": 20},
+                },
+            },
+        ),
+        Tool(
+            name="authentik_create_policy_binding",
+            description=(
+                "Bind a policy, group or user to a target (a policybindingmodel_ptr_id). Required: target, "
+                "order, and one of policy / group / user. Optional: negate, enabled, timeout, failure_result."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "data": {"type": "object", "description": "Binding fields", "additionalProperties": True},
+                },
+                "required": ["data"],
+            },
+        ),
+        Tool(
+            name="authentik_update_policy_binding",
+            description="Update a policy binding (PATCH)",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "binding_id": {"type": "string", "description": "Policy binding UUID"},
+                    "data": {"type": "object", "description": "Fields to update", "additionalProperties": True},
+                },
+                "required": ["binding_id", "data"],
+            },
+        ),
+        Tool(
+            name="authentik_delete_policy_binding",
+            description="Delete a policy binding",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "binding_id": {"type": "string", "description": "Policy binding UUID"},
+                },
+                "required": ["binding_id"],
+            },
+        ),
+
+        # Brand Management Tools
+        Tool(
+            name="authentik_list_brands",
+            description=(
+                "List brands. A brand selects the default flows for its domain: flow_authentication, "
+                "flow_recovery, flow_enrollment (via identification stage), flow_user_settings, etc."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "search": {"type": "string", "description": "Search term"},
+                    "ordering": {"type": "string", "description": "Field to order by"},
+                    "page": {"type": "integer", "description": "Page number", "default": 1},
+                    "page_size": {"type": "integer", "description": "Number of items per page", "default": 20},
+                },
+            },
+        ),
+        Tool(
+            name="authentik_update_brand",
+            description="Update a brand (PATCH), e.g. set flow_recovery to a flow pk",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "brand_id": {"type": "string", "description": "Brand UUID (brand_uuid)"},
+                    "data": {"type": "object", "description": "Fields to update", "additionalProperties": True},
+                },
+                "required": ["brand_id", "data"],
+            },
+        ),
+        Tool(
+            name="authentik_get_system_info",
+            description="Get authentik version and runtime info (admin/system)",
+            inputSchema={"type": "object", "properties": {}},
         ),
 
         # Provider Management Tools
@@ -849,6 +1212,129 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> Sequence[TextConten
             data = await authentik_client.request("GET", f"/flows/instances/{flow_slug}/")
             return [TextContent(type="text", text=f"Flow details: {data}")]
 
+        if name == "authentik_update_flow":
+            flow_slug = arguments["flow_slug"]
+            data = await authentik_client.request(
+                "PATCH", f"/flows/instances/{flow_slug}/", json_data=arguments["data"],
+            )
+            return [TextContent(type="text", text=f"Updated flow: {data}")]
+
+        if name == "authentik_list_flow_bindings":
+            params = {k: v for k, v in arguments.items() if v is not None}
+            params.setdefault("ordering", "order")
+            data = await authentik_client.request("GET", "/flows/bindings/", params=params)
+            return [TextContent(type="text", text=f"Flow bindings: {data}")]
+
+        if name == "authentik_create_flow_binding":
+            data = await authentik_client.request("POST", "/flows/bindings/", json_data=arguments["data"])
+            return [TextContent(type="text", text=f"Created flow binding: {data}")]
+
+        if name == "authentik_update_flow_binding":
+            binding_id = arguments["binding_id"]
+            data = await authentik_client.request(
+                "PATCH", f"/flows/bindings/{binding_id}/", json_data=arguments["data"],
+            )
+            return [TextContent(type="text", text=f"Updated flow binding: {data}")]
+
+        if name == "authentik_delete_flow_binding":
+            binding_id = arguments["binding_id"]
+            await authentik_client.request("DELETE", f"/flows/bindings/{binding_id}/")
+            return [TextContent(type="text", text=f"Deleted flow binding {binding_id}")]
+
+        # Stage Management Tools
+        if name == "authentik_list_stages":
+            params = {k: v for k, v in arguments.items() if v is not None}
+            data = await authentik_client.request("GET", "/stages/all/", params=params)
+            return [TextContent(type="text", text=f"Stages: {data}")]
+
+        if name in ("authentik_get_stage", "authentik_update_stage", "authentik_delete_stage"):
+            stage_id = arguments["stage_id"]
+            stage_type = arguments.get("stage_type")
+            if not stage_type:
+                summary = await authentik_client.request("GET", f"/stages/all/{stage_id}/")
+                stage_type = stage_path_from_model(summary["meta_model_name"])
+            endpoint = f"/stages/{stage_type}/{stage_id}/"
+            if name == "authentik_get_stage":
+                data = await authentik_client.request("GET", endpoint)
+                return [TextContent(type="text", text=f"Stage details ({stage_type}): {data}")]
+            if name == "authentik_update_stage":
+                data = await authentik_client.request("PATCH", endpoint, json_data=arguments["data"])
+                return [TextContent(type="text", text=f"Updated stage ({stage_type}): {data}")]
+            await authentik_client.request("DELETE", f"/stages/all/{stage_id}/")
+            return [TextContent(type="text", text=f"Deleted stage {stage_id}")]
+
+        if name == "authentik_create_stage":
+            stage_type = arguments["stage_type"]
+            data = await authentik_client.request("POST", f"/stages/{stage_type}/", json_data=arguments["data"])
+            return [TextContent(type="text", text=f"Created stage ({stage_type}): {data}")]
+
+        if name == "authentik_list_prompts":
+            params = {k: v for k, v in arguments.items() if v is not None}
+            data = await authentik_client.request("GET", "/stages/prompt/prompts/", params=params)
+            return [TextContent(type="text", text=f"Prompts: {data}")]
+
+        # Policy Management Tools
+        if name == "authentik_list_policies":
+            params = {k: v for k, v in arguments.items() if v is not None}
+            data = await authentik_client.request("GET", "/policies/all/", params=params)
+            return [TextContent(type="text", text=f"Policies: {data}")]
+
+        if name in ("authentik_get_policy", "authentik_update_policy"):
+            policy_id = arguments["policy_id"]
+            summary = await authentik_client.request("GET", f"/policies/all/{policy_id}/")
+            policy_type = policy_path_from_model(summary["meta_model_name"])
+            endpoint = f"/policies/{policy_type}/{policy_id}/"
+            if name == "authentik_get_policy":
+                data = await authentik_client.request("GET", endpoint)
+                return [TextContent(type="text", text=f"Policy details ({policy_type}): {data}")]
+            data = await authentik_client.request("PATCH", endpoint, json_data=arguments["data"])
+            return [TextContent(type="text", text=f"Updated policy ({policy_type}): {data}")]
+
+        if name == "authentik_create_policy":
+            policy_type = arguments["policy_type"]
+            data = await authentik_client.request(
+                "POST", f"/policies/{policy_type}/", json_data=arguments["data"],
+            )
+            return [TextContent(type="text", text=f"Created policy ({policy_type}): {data}")]
+
+        if name == "authentik_list_policy_bindings":
+            params = {k: v for k, v in arguments.items() if v is not None}
+            data = await authentik_client.request("GET", "/policies/bindings/", params=params)
+            return [TextContent(type="text", text=f"Policy bindings: {data}")]
+
+        if name == "authentik_create_policy_binding":
+            data = await authentik_client.request("POST", "/policies/bindings/", json_data=arguments["data"])
+            return [TextContent(type="text", text=f"Created policy binding: {data}")]
+
+        if name == "authentik_update_policy_binding":
+            binding_id = arguments["binding_id"]
+            data = await authentik_client.request(
+                "PATCH", f"/policies/bindings/{binding_id}/", json_data=arguments["data"],
+            )
+            return [TextContent(type="text", text=f"Updated policy binding: {data}")]
+
+        if name == "authentik_delete_policy_binding":
+            binding_id = arguments["binding_id"]
+            await authentik_client.request("DELETE", f"/policies/bindings/{binding_id}/")
+            return [TextContent(type="text", text=f"Deleted policy binding {binding_id}")]
+
+        # Brand Management Tools
+        if name == "authentik_list_brands":
+            params = {k: v for k, v in arguments.items() if v is not None}
+            data = await authentik_client.request("GET", "/core/brands/", params=params)
+            return [TextContent(type="text", text=f"Brands: {data}")]
+
+        if name == "authentik_update_brand":
+            brand_id = arguments["brand_id"]
+            data = await authentik_client.request(
+                "PATCH", f"/core/brands/{brand_id}/", json_data=arguments["data"],
+            )
+            return [TextContent(type="text", text=f"Updated brand: {data}")]
+
+        if name == "authentik_get_system_info":
+            data = await authentik_client.request("GET", "/admin/version/")
+            return [TextContent(type="text", text=f"Version: {data}")]
+
         # Provider Management Tools
         if name == "authentik_list_providers":
             params = {k: v for k, v in arguments.items() if v is not None}
@@ -938,6 +1424,12 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> Sequence[TextConten
 
         return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
+    except httpx.HTTPStatusError as e:
+        logger.exception(f"Tool call failed: {e!s}")
+        return [TextContent(
+            type="text",
+            text=f"Error: HTTP {e.response.status_code} {e.request.method} {e.request.url}: {e.response.text}",
+        )]
     except Exception as e:
         logger.exception(f"Tool call failed: {e!s}")
         return [TextContent(type="text", text=f"Error: {e!s}")]
@@ -974,7 +1466,7 @@ async def serve(base_url: str, token: str, *, verify_ssl: bool = True) -> None:
                 write_stream,
                 InitializationOptions(
                     server_name="authentik-mcp",
-                    server_version="0.3.0",
+                    server_version="0.4.0",
                     capabilities=server.get_capabilities(
                         notification_options=NotificationOptions(),
                         experimental_capabilities={},
