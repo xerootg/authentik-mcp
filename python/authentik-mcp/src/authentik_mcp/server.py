@@ -145,6 +145,8 @@ class AuthentikClient:
                 json=json_data,
             )
             response.raise_for_status()
+            if not response.content:
+                return {}
             result = response.json()
             return result if isinstance(result, dict) else {"data": result}
         except httpx.HTTPStatusError as e:
@@ -295,7 +297,7 @@ async def list_tools() -> list[Tool]:
                     "name": {"type": "string", "description": "Full name"},
                     "password": {"type": "string", "description": "Password"},
                     "is_active": {"type": "boolean", "description": "Whether user is active", "default": True},
-                    "groups": {"type": "array", "items": {"type": "integer"}, "description": "Group IDs to assign"},
+                    "groups": {"type": "array", "items": {"type": "string"}, "description": "Group UUIDs to assign"},
                 },
                 "required": ["username", "email", "name"],
             },
@@ -311,7 +313,7 @@ async def list_tools() -> list[Tool]:
                     "email": {"type": "string", "description": "Email address"},
                     "name": {"type": "string", "description": "Full name"},
                     "is_active": {"type": "boolean", "description": "Whether user is active"},
-                    "groups": {"type": "array", "items": {"type": "integer"}, "description": "Group IDs to assign"},
+                    "groups": {"type": "array", "items": {"type": "string"}, "description": "Group UUIDs to assign"},
                 },
                 "required": ["user_id"],
             },
@@ -445,6 +447,18 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="authentik_check_application_access",
+            description="Check whether a user passes an application's access policies (admin check_access)",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "app_slug": {"type": "string", "description": "Application slug"},
+                    "for_user": {"type": "integer", "description": "User ID (pk) to evaluate"},
+                },
+                "required": ["app_slug", "for_user"],
+            },
+        ),
+        Tool(
             name="authentik_update_application",
             description="Update an existing application",
             inputSchema={
@@ -531,6 +545,34 @@ async def list_tools() -> list[Tool]:
             },
         ),
 
+        Tool(
+            name="authentik_create_flow",
+            description=(
+                "Create a flow. Required in 'data': name, slug, title, designation (authentication, "
+                "authorization, enrollment, invalidation, recovery, stage_configuration, unenrollment). "
+                "Optional: authentication (none, require_authenticated, require_unauthenticated, "
+                "require_superuser, require_redirect, require_outpost), denied_action, layout. "
+                "Add stages with authentik_create_flow_binding."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "data": {"type": "object", "description": "Flow fields", "additionalProperties": True},
+                },
+                "required": ["data"],
+            },
+        ),
+        Tool(
+            name="authentik_delete_flow",
+            description="Delete a flow by slug (its stage bindings go with it; the stages are kept)",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "flow_slug": {"type": "string", "description": "Flow slug to delete"},
+                },
+                "required": ["flow_slug"],
+            },
+        ),
         Tool(
             name="authentik_update_flow",
             description=(
@@ -688,6 +730,47 @@ async def list_tools() -> list[Tool]:
                     "page": {"type": "integer", "description": "Page number", "default": 1},
                     "page_size": {"type": "integer", "description": "Number of items per page", "default": 20},
                 },
+            },
+        ),
+
+        Tool(
+            name="authentik_list_invitations",
+            description="List enrollment invitations (the itoken links used by invitation stages)",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "search": {"type": "string", "description": "Search term"},
+                    "ordering": {"type": "string", "description": "Field to order by"},
+                    "page": {"type": "integer", "description": "Page number", "default": 1},
+                    "page_size": {"type": "integer", "description": "Number of items per page", "default": 20},
+                },
+            },
+        ),
+        Tool(
+            name="authentik_create_invitation",
+            description=(
+                "Create an invitation. 'data' fields: name (slug-like, required), flow (enrollment flow pk; "
+                "the link only works in that flow), single_use, expires (ISO datetime or null), fixed_data "
+                "(values pre-filled into prompts). Share it as "
+                "<authentik>/if/flow/<flow slug>/?itoken=<invitation pk>."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "data": {"type": "object", "description": "Invitation fields", "additionalProperties": True},
+                },
+                "required": ["data"],
+            },
+        ),
+        Tool(
+            name="authentik_delete_invitation",
+            description="Delete (revoke) an invitation",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "invitation_id": {"type": "string", "description": "Invitation UUID"},
+                },
+                "required": ["invitation_id"],
             },
         ),
 
@@ -1180,6 +1263,13 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> Sequence[TextConten
             data = await authentik_client.request("POST", "/core/applications/", json_data=arguments)
             return [TextContent(type="text", text=f"Created application: {data}")]
 
+        if name == "authentik_check_application_access":
+            app_slug = arguments["app_slug"]
+            data = await authentik_client.request(
+                "GET", f"/core/applications/{app_slug}/check_access/", params={"for_user": arguments["for_user"]},
+            )
+            return [TextContent(type="text", text=f"Access check for {app_slug}: {data}")]
+
         if name == "authentik_update_application":
             app_slug = arguments.pop("app_slug")
             data = await authentik_client.request("PATCH", f"/core/applications/{app_slug}/", json_data=arguments)
@@ -1211,6 +1301,15 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> Sequence[TextConten
             flow_slug = arguments["flow_slug"]
             data = await authentik_client.request("GET", f"/flows/instances/{flow_slug}/")
             return [TextContent(type="text", text=f"Flow details: {data}")]
+
+        if name == "authentik_create_flow":
+            data = await authentik_client.request("POST", "/flows/instances/", json_data=arguments["data"])
+            return [TextContent(type="text", text=f"Created flow: {data}")]
+
+        if name == "authentik_delete_flow":
+            flow_slug = arguments["flow_slug"]
+            await authentik_client.request("DELETE", f"/flows/instances/{flow_slug}/")
+            return [TextContent(type="text", text=f"Deleted flow {flow_slug}")]
 
         if name == "authentik_update_flow":
             flow_slug = arguments["flow_slug"]
@@ -1272,6 +1371,22 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> Sequence[TextConten
             params = {k: v for k, v in arguments.items() if v is not None}
             data = await authentik_client.request("GET", "/stages/prompt/prompts/", params=params)
             return [TextContent(type="text", text=f"Prompts: {data}")]
+
+        if name == "authentik_list_invitations":
+            params = {k: v for k, v in arguments.items() if v is not None}
+            data = await authentik_client.request("GET", "/stages/invitation/invitations/", params=params)
+            return [TextContent(type="text", text=f"Invitations: {data}")]
+
+        if name == "authentik_create_invitation":
+            data = await authentik_client.request(
+                "POST", "/stages/invitation/invitations/", json_data=arguments["data"],
+            )
+            return [TextContent(type="text", text=f"Created invitation: {data}")]
+
+        if name == "authentik_delete_invitation":
+            invitation_id = arguments["invitation_id"]
+            await authentik_client.request("DELETE", f"/stages/invitation/invitations/{invitation_id}/")
+            return [TextContent(type="text", text=f"Deleted invitation {invitation_id}")]
 
         # Policy Management Tools
         if name == "authentik_list_policies":

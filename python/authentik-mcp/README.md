@@ -137,6 +137,7 @@ it via `authentik-mcp login --method manual`, the `--token` flag, or
 - `authentik_create_application` - Create new applications
 - `authentik_update_application` - Update existing applications
 - `authentik_delete_application` - Delete applications
+- `authentik_check_application_access` - Check whether a user passes an application's access policies
 
 ### Event Monitoring
 - `authentik_list_events` - List system events and audit logs
@@ -145,7 +146,9 @@ it via `authentik-mcp login --method manual`, the `--token` flag, or
 ### Flow Management
 - `authentik_list_flows` - List authentication flows
 - `authentik_get_flow` - Get flow details
+- `authentik_create_flow` - Create a flow
 - `authentik_update_flow` - Update a flow (PATCH)
+- `authentik_delete_flow` - Delete a flow
 - `authentik_list_flow_bindings` - List the stages bound to a flow (`target` = flow pk), in order
 - `authentik_create_flow_binding` - Bind a stage into a flow
 - `authentik_update_flow_binding` - Change a binding's order or policy evaluation
@@ -158,6 +161,7 @@ it via `authentik-mcp login --method manual`, the `--token` flag, or
 - `authentik_update_stage` - Update a stage (PATCH)
 - `authentik_delete_stage` - Delete a stage
 - `authentik_list_prompts` - List prompt fields used by prompt stages
+- `authentik_list_invitations` / `authentik_create_invitation` / `authentik_delete_invitation` - Enrollment invitation links
 
 ### Policy Management
 - `authentik_list_policies` - List policies of every type
