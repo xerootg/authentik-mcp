@@ -163,6 +163,16 @@ it via `authentik-mcp login --method manual`, the `--token` flag, or
 - `authentik_list_prompts` - List prompt fields used by prompt stages
 - `authentik_list_invitations` / `authentik_create_invitation` / `authentik_delete_invitation` - Enrollment invitation links
 
+### Property Mapping Management
+- `authentik_list_property_mappings` - List property mappings of every type
+- `authentik_list_scope_mappings` - List OAuth2/OIDC scope mappings; filter `scope_name=offline_access` to find its pk
+- `authentik_get_property_mapping` - Get full mapping config (`mapping_type` looked up automatically for scope mappings)
+- `authentik_create_property_mapping` - Create a mapping (`mapping_type` defaults to `provider/scope`); scope data contains `name`, `scope_name`, `expression`, and optional `description`
+- `authentik_update_property_mapping` - Update a mapping (PATCH; optional `mapping_type`)
+- `authentik_delete_property_mapping` - Delete a mapping by UUID
+
+A scope mapping takes effect on a provider only after its pk is added to the provider's `property_mappings` with `authentik_update_provider`. Its `expression` is a Python snippet returning a dict of claims; `return {}` only grants the scope. For mapping models that cannot be resolved automatically, pass `mapping_type` explicitly.
+
 ### Policy Management
 - `authentik_list_policies` - List policies of every type
 - `authentik_get_policy` - Get a policy's full config (type looked up automatically)

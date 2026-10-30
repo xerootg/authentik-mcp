@@ -18,6 +18,7 @@ This MCP server provides comprehensive access to Authentik's API including:
 - Token management
 """
 
+import uuid
 import logging
 from collections.abc import Sequence
 from typing import Any
@@ -96,6 +97,40 @@ def stage_path_from_model(meta_model_name: str) -> str:
     if label.startswith("authenticator_"):
         return "authenticator/" + label.removeprefix("authenticator_")
     return label
+
+
+# Property mapping API paths under /propertymappings/.
+# Only provider/scope has been verified against a live server.
+PROPERTY_MAPPING_TYPES = [
+    "provider/scope", "provider/saml", "provider/radius", "provider/rac",
+    "provider/scim", "provider/google_workspace", "provider/microsoft_entra",
+    "source/ldap", "source/oauth", "source/plex", "source/saml", "source/scim",
+    "source/kerberos", "notification",
+]
+
+
+def property_mapping_path_from_model(meta_model_name: str) -> str:
+    """Resolve known property mapping models to their typed API paths."""
+    if meta_model_name == "authentik_providers_oauth2.scopemapping":
+        return "provider/scope"
+    raise ValueError(
+        f"Unknown property mapping model {meta_model_name!r}; pass mapping_type explicitly."
+    )
+
+
+def checked_mapping_type(mapping_type: str) -> str:
+    """The type becomes part of a URL path, so only the known API paths are accepted."""
+    if mapping_type not in PROPERTY_MAPPING_TYPES:
+        raise ValueError(f"mapping_type must be one of {PROPERTY_MAPPING_TYPES}, got {mapping_type!r}")
+    return mapping_type
+
+
+def checked_mapping_id(mapping_id: str) -> str:
+    """The id becomes part of a URL path, so it must be a UUID."""
+    try:
+        return str(uuid.UUID(str(mapping_id)))
+    except ValueError:
+        raise ValueError(f"mapping_id must be a UUID, got {mapping_id!r}") from None
 
 
 def policy_path_from_model(meta_model_name: str) -> str:
@@ -774,6 +809,114 @@ async def list_tools() -> list[Tool]:
             },
         ),
 
+        # Property Mapping Management Tools
+        Tool(
+            name="authentik_list_property_mappings",
+            description=(
+                'List property mappings of every type. Each result has pk, name, component and meta_model_name; '
+                'use authentik_get_property_mapping for full type-specific config.'
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "search": {"type": "string", "description": "Search term for filtering mappings"},
+                    "ordering": {"type": "string", "description": "Field to order by"},
+                    "page": {"type": "integer", "description": "Page number", "default": 1},
+                    "page_size": {"type": "integer", "description": "Number of items per page", "default": 20},
+                }
+            },
+        ),
+        Tool(
+            name="authentik_list_scope_mappings",
+            description=(
+                'List OAuth2/OIDC scope mappings; filter scope_name=offline_access to find the mapping UUID. A '
+                "scope mapping takes effect on a provider only after its pk is added to that provider's "
+                'property_mappings with authentik_update_provider.'
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "scope_name": {"type": "string", "description": "Filter by scope name"},
+                    "search": {"type": "string", "description": "Search term for filtering mappings"},
+                    "ordering": {"type": "string", "description": "Field to order by"},
+                    "page": {"type": "integer", "description": "Page number", "default": 1},
+                    "page_size": {"type": "integer", "description": "Number of items per page", "default": 20},
+                }
+            },
+        ),
+        Tool(
+            name="authentik_get_property_mapping",
+            description=(
+                "Get a property mapping's full type-specific config. mapping_type is optional and is looked up "
+                'from meta_model_name when omitted; unknown models require an explicit mapping_type.'
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "mapping_id": {"type": "string", "format": "uuid", "description": "Property mapping UUID"},
+                    "mapping_type": {"type": "string", "enum": PROPERTY_MAPPING_TYPES, "description": "Mapping type (API path)"},
+                },
+                "required": [
+                    "mapping_id"
+                ]
+            },
+        ),
+        Tool(
+            name="authentik_create_property_mapping",
+            description=(
+                'Create a property mapping (mapping_type defaults to provider/scope). For scope mappings, data '
+                'contains name, scope_name, expression and optional description. expression is a Python snippet '
+                'that returns a dict of claims; use return {} for a mapping that only grants a scope. A scope '
+                "mapping takes effect on a provider only after its pk is added to that provider's "
+                'property_mappings with authentik_update_provider.'
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "mapping_type": {"type": "string", "enum": PROPERTY_MAPPING_TYPES, "description": "Mapping type (API path)", "default": "provider/scope"},
+                    "data": {"type": "object", "description": "Mapping fields", "additionalProperties": True},
+                },
+                "required": [
+                    "data"
+                ]
+            },
+        ),
+        Tool(
+            name="authentik_update_property_mapping",
+            description=(
+                'Update a property mapping (PATCH: only included fields change). mapping_type is optional and is '
+                'looked up from meta_model_name when omitted; unknown models require an explicit mapping_type.'
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "mapping_id": {"type": "string", "format": "uuid", "description": "Property mapping UUID"},
+                    "data": {"type": "object", "description": "Mapping fields", "additionalProperties": True},
+                    "mapping_type": {"type": "string", "enum": PROPERTY_MAPPING_TYPES, "description": "Mapping type (API path)"},
+                },
+                "required": [
+                    "mapping_id",
+                    "data"
+                ]
+            },
+        ),
+        Tool(
+            name="authentik_delete_property_mapping",
+            description=(
+                'Delete a property mapping using its UUID, regardless of mapping type.'
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "mapping_id": {"type": "string", "format": "uuid", "description": "Property mapping UUID"},
+                },
+                "required": [
+                    "mapping_id"
+                ]
+            },
+        ),
+
+
         # Policy Management Tools
         Tool(
             name="authentik_list_policies",
@@ -1388,6 +1531,40 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> Sequence[TextConten
             await authentik_client.request("DELETE", f"/stages/invitation/invitations/{invitation_id}/")
             return [TextContent(type="text", text=f"Deleted invitation {invitation_id}")]
 
+        # Property Mapping Management Tools
+        if name in ("authentik_list_property_mappings", "authentik_list_scope_mappings"):
+            params = {k: v for k, v in arguments.items() if v is not None}
+            mapping_path = "provider/scope" if name == "authentik_list_scope_mappings" else "all"
+            data = await authentik_client.request("GET", f"/propertymappings/{mapping_path}/", params=params)
+            return [TextContent(type="text", text=f"Property mappings: {data}")]
+
+        if name in ("authentik_get_property_mapping", "authentik_update_property_mapping"):
+            mapping_id = checked_mapping_id(arguments["mapping_id"])
+            mapping_type = arguments.get("mapping_type")
+            if mapping_type:
+                checked_mapping_type(mapping_type)
+            if not mapping_type:
+                summary = await authentik_client.request("GET", f"/propertymappings/all/{mapping_id}/")
+                mapping_type = property_mapping_path_from_model(summary["meta_model_name"])
+            endpoint = f"/propertymappings/{mapping_type}/{mapping_id}/"
+            if name == "authentik_get_property_mapping":
+                data = await authentik_client.request("GET", endpoint)
+                return [TextContent(type="text", text=f"Property mapping details ({mapping_type}): {data}")]
+            data = await authentik_client.request("PATCH", endpoint, json_data=arguments["data"])
+            return [TextContent(type="text", text=f"Updated property mapping ({mapping_type}): {data}")]
+
+        if name == "authentik_create_property_mapping":
+            mapping_type = checked_mapping_type(arguments.get("mapping_type", "provider/scope"))
+            data = await authentik_client.request(
+                "POST", f"/propertymappings/{mapping_type}/", json_data=arguments["data"],
+            )
+            return [TextContent(type="text", text=f"Created property mapping ({mapping_type}): {data}")]
+
+        if name == "authentik_delete_property_mapping":
+            mapping_id = checked_mapping_id(arguments["mapping_id"])
+            await authentik_client.request("DELETE", f"/propertymappings/all/{mapping_id}/")
+            return [TextContent(type="text", text=f"Deleted property mapping {mapping_id}")]
+
         # Policy Management Tools
         if name == "authentik_list_policies":
             params = {k: v for k, v in arguments.items() if v is not None}
@@ -1581,7 +1758,7 @@ async def serve(base_url: str, token: str, *, verify_ssl: bool = True) -> None:
                 write_stream,
                 InitializationOptions(
                     server_name="authentik-mcp",
-                    server_version="0.4.0",
+                    server_version="0.5.0",
                     capabilities=server.get_capabilities(
                         notification_options=NotificationOptions(),
                         experimental_capabilities={},
