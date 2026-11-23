@@ -159,8 +159,8 @@ REVEAL_PARAM_HELP = (
 
 
 def slugify(value: str) -> str:
-    """Django's slugify (authentik applies it to service-account token identifiers)."""
-    value = unicodedata.normalize("NFKC", value)
+    """Django's slugify in its default ASCII mode (authentik applies it to service-account token identifiers)."""
+    value = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
     value = re.sub(r"[^\w\s-]", "", value.lower()).strip()
     return re.sub(r"[-\s]+", "-", value)
 

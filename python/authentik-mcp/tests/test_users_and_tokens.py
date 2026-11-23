@@ -86,6 +86,8 @@ def test_create_service_account_identifier_is_slugified(client):
     ("x2d-claude", "service-account-x2d-claude-password"),
     ("CI.Bot", "service-account-cibot-password"),
     ("My Svc_1", "service-account-my-svc_1-password"),
+    ("café", "service-account-cafe-password"),
+    ("Ünïcode Bot", "service-account-unicode-bot-password"),
 ])
 def test_service_account_token_identifier(name, expected):
     assert server.service_account_token_identifier(name) == expected
