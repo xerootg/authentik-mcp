@@ -18,11 +18,13 @@ This MCP server provides comprehensive access to Authentik's API including:
 - Token management
 """
 
-import uuid
 import logging
+import re
+import unicodedata
+import uuid
 from collections.abc import Sequence
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import quote, urljoin
 
 import httpx
 from mcp.server import NotificationOptions, Server
@@ -138,6 +140,42 @@ def policy_path_from_model(meta_model_name: str) -> str:
     label = meta_model_name.split(".", 1)[0]
     label = label.removeprefix("authentik_policies_").removeprefix("authentik_")
     return {"expiry": "password_expiry"}.get(label, label)
+
+
+# authentik's writable user types (authentik/core/models.py UserTypes). Only
+# service_account users can hold the app-password tokens the OAuth2
+# client-credentials flow needs. internal_service_account is reserved for
+# authentik itself and rejected by the API's validate_type, so it is not offered.
+USER_TYPES = ["internal", "external", "service_account"]
+
+# Response fields that carry a token secret. Secrets are stripped from tool results
+# by default because tool output ends up in LLM transcripts and logs.
+SECRET_FIELDS = frozenset({"token", "key"})
+REDACTED = "<redacted: pass reveal_token=true to show, or read it in the authentik admin UI>"
+REVEAL_PARAM_HELP = (
+    "Include the secret token value in the result. Default false: tool output is kept in "
+    "LLM transcripts and logs, so only set this when the caller must receive the secret."
+)
+
+
+def slugify(value: str) -> str:
+    """Django's slugify in its default ASCII mode (authentik applies it to service-account token identifiers)."""
+    value = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
+    value = re.sub(r"[^\w\s-]", "", value.lower()).strip()
+    return re.sub(r"[-\s]+", "-", value).strip("-_")
+
+
+def service_account_token_identifier(username: str) -> str:
+    """Identifier authentik gives the app-password token of a service account."""
+    return slugify(f"service-account-{username}-password")
+
+
+def redact_secrets(data: dict[str, Any], *, reveal: bool) -> dict[str, Any]:
+    """Return a copy of an API response with token secrets replaced unless reveal is set."""
+    if reveal:
+        return data
+    return {k: (REDACTED if k in SECRET_FIELDS and v else v) for k, v in data.items()}
+
 
 # Initialize MCP server
 server: Server[None] = Server("authentik-mcp")
@@ -323,7 +361,11 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="authentik_create_user",
-            description="Create a new user in Authentik",
+            description=(
+                "Create a new user in Authentik. For a service account with a ready-made "
+                "app-password token (client-credentials flow) prefer "
+                "authentik_create_service_account."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -333,6 +375,15 @@ async def list_tools() -> list[Tool]:
                     "password": {"type": "string", "description": "Password"},
                     "is_active": {"type": "boolean", "description": "Whether user is active", "default": True},
                     "groups": {"type": "array", "items": {"type": "string"}, "description": "Group UUIDs to assign"},
+                    "type": {
+                        "type": "string",
+                        "enum": USER_TYPES,
+                        "description": "User type (authentik default: internal)",
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "User path, e.g. 'users' or 'goauthentik.io/service-accounts'",
+                    },
                 },
                 "required": ["username", "email", "name"],
             },
@@ -349,8 +400,43 @@ async def list_tools() -> list[Tool]:
                     "name": {"type": "string", "description": "Full name"},
                     "is_active": {"type": "boolean", "description": "Whether user is active"},
                     "groups": {"type": "array", "items": {"type": "string"}, "description": "Group UUIDs to assign"},
+                    "type": {"type": "string", "enum": USER_TYPES, "description": "User type"},
+                    "path": {"type": "string", "description": "User path"},
                 },
                 "required": ["user_id"],
+            },
+        ),
+        Tool(
+            name="authentik_create_service_account",
+            description=(
+                "Create a service-account user plus its app-password token "
+                "(POST /core/users/service_account/). The token value is NOT returned "
+                "unless reveal_token is true, because tool output lands in LLM transcripts; "
+                "read it in the authentik admin UI under Directory > Tokens and App passwords, "
+                "filtered by the new user (identifier service-account-<slugified name>-password)."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Username of the service account"},
+                    "create_group": {
+                        "type": "boolean",
+                        "description": "Also create a group of the same name with the account as member",
+                        "default": False,
+                    },
+                    "expiring": {"type": "boolean", "description": "Whether the token expires", "default": True},
+                    "expires": {
+                        "type": "string",
+                        "format": "date-time",
+                        "description": "Token expiry (authentik default: 360 days from now)",
+                    },
+                    "reveal_token": {
+                        "type": "boolean",
+                        "description": REVEAL_PARAM_HELP,
+                        "default": False,
+                    },
+                },
+                "required": ["name"],
             },
         ),
         Tool(
@@ -1318,7 +1404,12 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="authentik_create_token",
-            description="Create a new API token",
+            description=(
+                "Create a new API token. authentik never returns the secret from the create call; "
+                "with reveal_token true the tool fetches it via /core/tokens/<identifier>/view_key/ "
+                "and includes it, otherwise read it in the authentik admin UI under "
+                "Directory > Tokens and App passwords."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -1327,6 +1418,11 @@ async def list_tools() -> list[Tool]:
                     "description": {"type": "string", "description": "Token description"},
                     "expires": {"type": "string", "format": "date-time", "description": "Token expiration date"},
                     "expiring": {"type": "boolean", "description": "Whether token expires", "default": True},
+                    "reveal_token": {
+                        "type": "boolean",
+                        "description": REVEAL_PARAM_HELP,
+                        "default": False,
+                    },
                 },
                 "required": ["identifier", "user"],
             },
@@ -1360,6 +1456,19 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> Sequence[TextConten
             user_id = arguments.pop("user_id")
             data = await authentik_client.request("PATCH", f"/core/users/{user_id}/", json_data=arguments)
             return [TextContent(type="text", text=f"Updated user: {data}")]
+
+        if name == "authentik_create_service_account":
+            reveal = bool(arguments.pop("reveal_token", False))
+            data = await authentik_client.request("POST", "/core/users/service_account/", json_data=arguments)
+            text = f"Created service account: {redact_secrets(data, reveal=reveal)}"
+            if not reveal:
+                username = str(data.get("username", arguments.get("name", "")))
+                text += (
+                    f"\nThe app-password token belongs to user {username} (pk {data.get('user_pk')}) and has "
+                    f"identifier {service_account_token_identifier(username)}; read its value in the authentik "
+                    "admin UI (Directory > Tokens and App passwords, filter by that user)."
+                )
+            return [TextContent(type="text", text=text)]
 
         if name == "authentik_delete_user":
             user_id = arguments["user_id"]
@@ -1711,8 +1820,14 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> Sequence[TextConten
             return [TextContent(type="text", text=f"Tokens: {data}")]
 
         if name == "authentik_create_token":
+            reveal = bool(arguments.pop("reveal_token", False))
             data = await authentik_client.request("POST", "/core/tokens/", json_data=arguments)
-            return [TextContent(type="text", text=f"Created token: {data}")]
+            if reveal:
+                # authentik's TokenViewSet uses lookup_field = "identifier", not pk.
+                identifier = quote(str(data.get("identifier", arguments["identifier"])), safe="")
+                key_data = await authentik_client.request("GET", f"/core/tokens/{identifier}/view_key/")
+                data = {**data, "key": key_data.get("key")}
+            return [TextContent(type="text", text=f"Created token: {redact_secrets(data, reveal=reveal)}")]
 
         return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
@@ -1758,7 +1873,7 @@ async def serve(base_url: str, token: str, *, verify_ssl: bool = True) -> None:
                 write_stream,
                 InitializationOptions(
                     server_name="authentik-mcp",
-                    server_version="0.5.0",
+                    server_version="0.6.0",
                     capabilities=server.get_capabilities(
                         notification_options=NotificationOptions(),
                         experimental_capabilities={},

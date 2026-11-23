@@ -120,8 +120,9 @@ it via `authentik-mcp login --method manual`, the `--token` flag, or
 ### User Management
 - `authentik_list_users` - List all users with filtering options
 - `authentik_get_user` - Get detailed user information
-- `authentik_create_user` - Create new users
-- `authentik_update_user` - Update existing users
+- `authentik_create_user` - Create new users (`type`: `internal` | `external` | `service_account`, plus `path`; `internal_service_account` is reserved by authentik and rejected on write)
+- `authentik_update_user` - Update existing users (same `type` and `path` fields)
+- `authentik_create_service_account` - Create a service-account user and its app-password token in one call (`name`, `create_group`, `expiring`, `expires`); see "Token secrets" below
 - `authentik_delete_user` - Delete users
 
 ### Group Management
@@ -208,7 +209,26 @@ A scope mapping takes effect on a provider only after its pk is added to the pro
 
 ### Token Management
 - `authentik_list_tokens` - List API tokens
-- `authentik_create_token` - Create new API tokens
+- `authentik_create_token` - Create new API tokens; see "Token secrets" below
+
+### Token secrets (`reveal_token`)
+
+`authentik_create_service_account` and `authentik_create_token` strip the secret
+(`token` / `key`) from their result by default and replace it with a `<redacted: ...>`
+marker. Tool output is stored in LLM transcripts and logs, so handing the secret back
+to the model would leak it into every copy of the conversation. Read the value in the
+authentik admin UI instead: **Directory > Tokens and App passwords**, filtered by the
+new user. authentik slugifies a service account's token identifier
+(`service-account-<name>-password` lower-cased, punctuation stripped); the tool result
+prints the exact identifier.
+
+For `authentik_create_token`, authentik's create response never carries the key; with
+`reveal_token: true` the tool follows up with `GET /core/tokens/<identifier>/view_key/`
+and includes the key in its result.
+
+Pass `reveal_token: true` only when the caller genuinely needs the secret in-band (for
+example to paste it straight into a one-off setup step). The flag is handled by the
+tool and never sent to authentik.
 
 ## Resources
 
@@ -235,6 +255,10 @@ new_user = await authentik_create_user({
     "name": "John Doe",
     "password": "secure-password"
 })
+
+# Create a service account for an OAuth2 client-credentials client.
+# The result names the user and token identifier but not the token value.
+svc = await authentik_create_service_account({"name": "ci-bot", "expiring": False})
 
 # Get recent events
 events = await authentik_list_events({

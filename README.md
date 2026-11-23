@@ -155,8 +155,9 @@ This repository is designed for seamless integration with the Model Context Prot
 
 - `authentik_list_users` - List users with filtering
 - `authentik_get_user` - Get user details
-- `authentik_create_user` - Create new user
-- `authentik_update_user` - Update existing user
+- `authentik_create_user` - Create new user (supports `type` and `path`)
+- `authentik_update_user` - Update existing user (supports `type` and `path`)
+- `authentik_create_service_account` - Create service account + app-password token (secret hidden unless `reveal_token`)
 - `authentik_delete_user` - Delete user
 
 #### Group Management
@@ -193,7 +194,7 @@ This repository is designed for seamless integration with the Model Context Prot
 #### Token Management
 
 - `authentik_list_tokens` - List API tokens
-- `authentik_create_token` - Create new token
+- `authentik_create_token` - Create new token (secret hidden unless `reveal_token`)
 
 ### Diagnostic MCP Server Tools
 
