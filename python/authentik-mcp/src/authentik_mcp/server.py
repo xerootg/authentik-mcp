@@ -24,7 +24,7 @@ import unicodedata
 import uuid
 from collections.abc import Sequence
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import quote, urljoin
 
 import httpx
 from mcp.server import NotificationOptions, Server
@@ -162,7 +162,7 @@ def slugify(value: str) -> str:
     """Django's slugify in its default ASCII mode (authentik applies it to service-account token identifiers)."""
     value = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
     value = re.sub(r"[^\w\s-]", "", value.lower()).strip()
-    return re.sub(r"[-\s]+", "-", value)
+    return re.sub(r"[-\s]+", "-", value).strip("-_")
 
 
 def service_account_token_identifier(username: str) -> str:
@@ -1823,7 +1823,8 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> Sequence[TextConten
             reveal = bool(arguments.pop("reveal_token", False))
             data = await authentik_client.request("POST", "/core/tokens/", json_data=arguments)
             if reveal:
-                identifier = str(data.get("identifier", arguments["identifier"]))
+                # authentik's TokenViewSet uses lookup_field = "identifier", not pk.
+                identifier = quote(str(data.get("identifier", arguments["identifier"])), safe="")
                 key_data = await authentik_client.request("GET", f"/core/tokens/{identifier}/view_key/")
                 data = {**data, "key": key_data.get("key")}
             return [TextContent(type="text", text=f"Created token: {redact_secrets(data, reveal=reveal)}")]

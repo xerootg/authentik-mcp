@@ -88,6 +88,8 @@ def test_create_service_account_identifier_is_slugified(client):
     ("My Svc_1", "service-account-my-svc_1-password"),
     ("café", "service-account-cafe-password"),
     ("Ünïcode Bot", "service-account-unicode-bot-password"),
+    ("  foo  ", "service-account-foo-password"),
+    ("---foo---", "service-account-foo-password"),
 ])
 def test_service_account_token_identifier(name, expected):
     assert server.service_account_token_identifier(name) == expected
@@ -115,6 +117,14 @@ def test_create_token_reveal_guard(client, reveal):
     assert client.calls == expected
     assert (SECRET in result[0].text) is reveal
     assert "svc-token" in result[0].text
+
+
+def test_create_token_reveal_quotes_identifier(client):
+    result = asyncio.run(server.call_tool(
+        "authentik_create_token", {"identifier": "a/b c", "user": 24, "reveal_token": True}
+    ))
+    assert client.calls[1] == ("GET", "/core/tokens/a%2Fb%20c/view_key/", None, None)
+    assert SECRET in result[0].text
 
 
 def test_redact_secrets_keeps_empty_and_other_fields():
