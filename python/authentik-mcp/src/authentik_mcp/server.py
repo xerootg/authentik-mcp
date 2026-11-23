@@ -428,7 +428,7 @@ async def list_tools() -> list[Tool]:
                     "expires": {
                         "type": "string",
                         "format": "date-time",
-                        "description": "Token expiry (authentik default: one year from now)",
+                        "description": "Token expiry (authentik default: 360 days from now)",
                     },
                     "reveal_token": {
                         "type": "boolean",
