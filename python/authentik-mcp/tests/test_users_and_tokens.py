@@ -24,7 +24,10 @@ class FakeClient:
                 "token": SECRET,
             }
         if path == "/core/tokens/":
-            return {"pk": "tok-uuid", "identifier": json_data["identifier"], "key": SECRET}
+            # authentik's create response is metadata only; the key comes from view_key.
+            return {"pk": "tok-uuid", "identifier": json_data["identifier"]}
+        if path.endswith("/view_key/"):
+            return {"key": SECRET}
         return {"pk": 24, **(json_data or {})}
 
 
@@ -68,6 +71,24 @@ def test_create_service_account_hides_token_by_default(client):
     assert "24" in text
     assert "redacted" in text
     assert "service-account-x2d-claude-password" in text
+    assert "pk 24" in text
+
+
+def test_create_service_account_identifier_is_slugified(client):
+    result = asyncio.run(server.call_tool("authentik_create_service_account", {"name": "CI.Bot"}))
+    text = result[0].text
+    assert "service-account-cibot-password" in text
+    assert "service-account-CI.Bot-password" not in text
+    assert "user CI.Bot" in text
+
+
+@pytest.mark.parametrize("name,expected", [
+    ("x2d-claude", "service-account-x2d-claude-password"),
+    ("CI.Bot", "service-account-cibot-password"),
+    ("My Svc_1", "service-account-my-svc_1-password"),
+])
+def test_service_account_token_identifier(name, expected):
+    assert server.service_account_token_identifier(name) == expected
 
 
 def test_create_service_account_reveal_token(client):
@@ -86,7 +107,10 @@ def test_create_token_reveal_guard(client, reveal):
     if reveal:
         args["reveal_token"] = True
     result = asyncio.run(server.call_tool("authentik_create_token", dict(args)))
-    assert client.calls == [("POST", "/core/tokens/", None, {"identifier": "svc-token", "user": 24})]
+    expected = [("POST", "/core/tokens/", None, {"identifier": "svc-token", "user": 24})]
+    if reveal:
+        expected.append(("GET", "/core/tokens/svc-token/view_key/", None, None))
+    assert client.calls == expected
     assert (SECRET in result[0].text) is reveal
     assert "svc-token" in result[0].text
 

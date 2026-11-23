@@ -18,8 +18,10 @@ This MCP server provides comprehensive access to Authentik's API including:
 - Token management
 """
 
-import uuid
 import logging
+import re
+import unicodedata
+import uuid
 from collections.abc import Sequence
 from typing import Any
 from urllib.parse import urljoin
@@ -140,9 +142,11 @@ def policy_path_from_model(meta_model_name: str) -> str:
     return {"expiry": "password_expiry"}.get(label, label)
 
 
-# authentik's UserTypeEnum (authentik/core/models.py). Only service_account users can
-# hold the app-password tokens the OAuth2 client-credentials flow needs.
-USER_TYPES = ["internal", "external", "service_account", "internal_service_account"]
+# authentik's writable user types (authentik/core/models.py UserTypes). Only
+# service_account users can hold the app-password tokens the OAuth2
+# client-credentials flow needs. internal_service_account is reserved for
+# authentik itself and rejected by the API's validate_type, so it is not offered.
+USER_TYPES = ["internal", "external", "service_account"]
 
 # Response fields that carry a token secret. Secrets are stripped from tool results
 # by default because tool output ends up in LLM transcripts and logs.
@@ -152,6 +156,18 @@ REVEAL_PARAM_HELP = (
     "Include the secret token value in the result. Default false: tool output is kept in "
     "LLM transcripts and logs, so only set this when the caller must receive the secret."
 )
+
+
+def slugify(value: str) -> str:
+    """Django's slugify (authentik applies it to service-account token identifiers)."""
+    value = unicodedata.normalize("NFKC", value)
+    value = re.sub(r"[^\w\s-]", "", value.lower()).strip()
+    return re.sub(r"[-\s]+", "-", value)
+
+
+def service_account_token_identifier(username: str) -> str:
+    """Identifier authentik gives the app-password token of a service account."""
+    return slugify(f"service-account-{username}-password")
 
 
 def redact_secrets(data: dict[str, Any], *, reveal: bool) -> dict[str, Any]:
@@ -396,8 +412,8 @@ async def list_tools() -> list[Tool]:
                 "Create a service-account user plus its app-password token "
                 "(POST /core/users/service_account/). The token value is NOT returned "
                 "unless reveal_token is true, because tool output lands in LLM transcripts; "
-                "read it in the authentik admin UI under Directory > Tokens and App passwords "
-                "(identifier service-account-<name>-password)."
+                "read it in the authentik admin UI under Directory > Tokens and App passwords, "
+                "filtered by the new user (identifier service-account-<slugified name>-password)."
             ),
             inputSchema={
                 "type": "object",
@@ -1389,8 +1405,10 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="authentik_create_token",
             description=(
-                "Create a new API token. The secret key is NOT returned unless reveal_token is true; "
-                "read it in the authentik admin UI under Directory > Tokens and App passwords."
+                "Create a new API token. authentik never returns the secret from the create call; "
+                "with reveal_token true the tool fetches it via /core/tokens/<identifier>/view_key/ "
+                "and includes it, otherwise read it in the authentik admin UI under "
+                "Directory > Tokens and App passwords."
             ),
             inputSchema={
                 "type": "object",
@@ -1444,10 +1462,11 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> Sequence[TextConten
             data = await authentik_client.request("POST", "/core/users/service_account/", json_data=arguments)
             text = f"Created service account: {redact_secrets(data, reveal=reveal)}"
             if not reveal:
+                username = str(data.get("username", arguments.get("name", "")))
                 text += (
-                    f"\nThe app-password token was created with identifier "
-                    f"service-account-{data.get('username', arguments.get('name'))}-password; "
-                    "read its value in the authentik admin UI (Directory > Tokens and App passwords)."
+                    f"\nThe app-password token belongs to user {username} (pk {data.get('user_pk')}) and has "
+                    f"identifier {service_account_token_identifier(username)}; read its value in the authentik "
+                    "admin UI (Directory > Tokens and App passwords, filter by that user)."
                 )
             return [TextContent(type="text", text=text)]
 
@@ -1803,6 +1822,10 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> Sequence[TextConten
         if name == "authentik_create_token":
             reveal = bool(arguments.pop("reveal_token", False))
             data = await authentik_client.request("POST", "/core/tokens/", json_data=arguments)
+            if reveal:
+                identifier = str(data.get("identifier", arguments["identifier"]))
+                key_data = await authentik_client.request("GET", f"/core/tokens/{identifier}/view_key/")
+                data = {**data, "key": key_data.get("key")}
             return [TextContent(type="text", text=f"Created token: {redact_secrets(data, reveal=reveal)}")]
 
         return [TextContent(type="text", text=f"Unknown tool: {name}")]

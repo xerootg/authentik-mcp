@@ -120,7 +120,7 @@ it via `authentik-mcp login --method manual`, the `--token` flag, or
 ### User Management
 - `authentik_list_users` - List all users with filtering options
 - `authentik_get_user` - Get detailed user information
-- `authentik_create_user` - Create new users (`type`: `internal` | `external` | `service_account` | `internal_service_account`, plus `path`)
+- `authentik_create_user` - Create new users (`type`: `internal` | `external` | `service_account`, plus `path`; `internal_service_account` is reserved by authentik and rejected on write)
 - `authentik_update_user` - Update existing users (same `type` and `path` fields)
 - `authentik_create_service_account` - Create a service-account user and its app-password token in one call (`name`, `create_group`, `expiring`, `expires`); see "Token secrets" below
 - `authentik_delete_user` - Delete users
@@ -217,8 +217,14 @@ A scope mapping takes effect on a provider only after its pk is added to the pro
 (`token` / `key`) from their result by default and replace it with a `<redacted: ...>`
 marker. Tool output is stored in LLM transcripts and logs, so handing the secret back
 to the model would leak it into every copy of the conversation. Read the value in the
-authentik admin UI instead: **Directory > Tokens and App passwords**, where a service
-account's token has the identifier `service-account-<name>-password`.
+authentik admin UI instead: **Directory > Tokens and App passwords**, filtered by the
+new user. authentik slugifies a service account's token identifier
+(`service-account-<name>-password` lower-cased, punctuation stripped); the tool result
+prints the exact identifier.
+
+For `authentik_create_token`, authentik's create response never carries the key; with
+`reveal_token: true` the tool follows up with `GET /core/tokens/<identifier>/view_key/`
+and includes the key in its result.
 
 Pass `reveal_token: true` only when the caller genuinely needs the secret in-band (for
 example to paste it straight into a one-off setup step). The flag is handled by the
